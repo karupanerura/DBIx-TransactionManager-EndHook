@@ -20,6 +20,17 @@ sub DBIx::TransactionManager::add_end_hook {
     push @$arr, $sub;
 }
 
+sub DBIx::TransactionManager::add_rollback_hook {
+    my ($self, $sub) = @_;
+
+    unless ( $self->in_transaction ) {
+        croak "only can call add_rollback_hook in transaction";
+    }
+
+    my $arr = $self->{_rollback_hooks} ||= [];
+    push @$arr, $sub;
+}
+
 my $orig_txn_commit = \&DBIx::TransactionManager::txn_commit;
 my $orig_txn_rollback = \&DBIx::TransactionManager::txn_rollback;
 
@@ -32,9 +43,9 @@ my $orig_txn_rollback = \&DBIx::TransactionManager::txn_rollback;
 sub txn_commit {
     my $self = shift;
     my $is_last_txn = @{ $self->active_transactions } == 1;
+    $self->{_rollback_hooks} = [];
 
     my $ret = $orig_txn_commit->($self);
-
     if ( $is_last_txn && defined $self->{_end_hooks} ) {
         try {
             while ( my $end_hook = shift @{ $self->{_end_hooks} } ) {
@@ -52,8 +63,23 @@ sub txn_commit {
 
 sub txn_rollback {
     my $self = shift;
-    my $ret = $orig_txn_rollback->($self);
+    my $is_last_txn = @{ $self->active_transactions } == 1;
     $self->{_end_hooks} = [];
+
+    my $ret = $orig_txn_rollback->($self);
+
+    if ( $is_last_txn && defined $self->{_rollback_hooks} ) {
+        try {
+            while ( my $end_hook = shift @{ $self->{_rollback_hooks} } ) {
+                $end_hook->();
+            }
+        }
+        catch {
+            $self->{_rollback_hooks} = [];
+            croak $_;
+        };
+    }
+
     $ret;
 }
 
@@ -95,6 +121,13 @@ Add hook subroutine to DBIx::TransactionManager. If call it without transactions
 Exception.
 And these hooks are executed only all transactions are executed successfully. If some
 transactions are failed, these aren't executed.
+
+=head2 $tm->add_rollback_hook(sub{});
+
+Add hook subroutine to DBIx::TransactionManager. If call it without transactions, it throw
+Exception.
+And these hooks are executed only any transactions are failed. If all
+transactions are successful, these aren't executed.
 
 =head1 DEPENDENCIES
 
